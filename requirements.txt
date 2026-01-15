@@ -3,3 +3,5 @@ pandas
 numpy
 matplotlib
 plotly
+boto3
+python-dateutil
