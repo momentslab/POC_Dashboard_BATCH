@@ -361,7 +361,7 @@ if not filtered_df.empty:
         with col_a1:
             action = st.radio(
                 "Action à exécuter",
-                ["Retry", "Abort", "Mark as Broken"],
+                ["Retry", "Abort", "Broken", "Restart and set as broken"],
                 horizontal=True
             )
 
