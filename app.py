@@ -111,8 +111,8 @@ def format_jobs_dataframe(jobs):
 
     df = pd.DataFrame(jobs)
 
-    # Convertir timestamp en datetime
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    # Convertir timestamp en datetime (timezone-naive pour compatibilité avec les filtres)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_localize(None)
 
     # Extraire les noms de queue et job definition
     df['Queue'] = df['jobQueue'].apply(extract_queue_name)
