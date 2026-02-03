@@ -165,9 +165,9 @@ def get_job_history(job_id):
 # -----------------------
 col_title, col_refresh = st.columns([4, 1])
 with col_title:
-    st.title("🔍 AWS Batch Monitoring Dashboard")
+    st.title("AWS Batch Monitoring Dashboard")
 with col_refresh:
-    if st.button("🔄 Rafraîchir", use_container_width=True):
+    if st.button("Rafraîchir", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
@@ -182,20 +182,20 @@ with st.spinner("Chargement des données depuis DynamoDB..."):
         tasks_df = format_jobs_dataframe(jobs)
 
         if tasks_df.empty:
-            st.warning("⚠️ Aucun job trouvé dans DynamoDB")
+            st.warning("Aucun job trouvé dans DynamoDB")
             st.stop()
 
-        st.success(f"✅ {len(tasks_df)} jobs chargés depuis DynamoDB")
+        st.success(f"{len(tasks_df)} jobs chargés depuis DynamoDB")
     except Exception as e:
-        st.error(f"❌ Erreur lors du chargement des données : {str(e)}")
-        st.info("💡 Vérifiez que vos credentials AWS sont configurés et que vous avez accès à DynamoDB")
+        st.error(f"Erreur lors du chargement des données : {str(e)}")
+        st.info("Vérifiez que vos credentials AWS sont configurés et que vous avez accès à DynamoDB")
         st.stop()
 
 # -----------------------
 # Filtrage des jobs
 # -----------------------
-st.markdown("### 🔎 Filtres")
-col1, col2, col3 = st.columns(3)
+st.markdown("### Filtres")
+col1, col2, col3, col4 = st.columns(4)
 
 # Filtre par Status
 status_filter = col1.multiselect(
@@ -218,18 +218,39 @@ region_filter = col3.multiselect(
     default=tasks_df["Region"].unique()
 )
 
-# Appliquer les filtres
-filtered_df = tasks_df[
-    (tasks_df["Status"].isin(status_filter)) &
-    (tasks_df["Task Type"].isin(tasktype_filter)) &
-    (tasks_df["Region"].isin(region_filter))
+# Filtre par Date
+date_filter = col4.selectbox(
+    "Période",
+    options=["Tout", "Dernier jour", "3 derniers jours", "Dernière semaine"],
+    index=0
+)
+
+# Appliquer le filtre de date
+now = datetime.now()
+if date_filter == "Dernier jour":
+    date_threshold = now - timedelta(days=1)
+    tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
+elif date_filter == "3 derniers jours":
+    date_threshold = now - timedelta(days=3)
+    tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
+elif date_filter == "Dernière semaine":
+    date_threshold = now - timedelta(days=7)
+    tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
+else:  # "Tout"
+    tasks_df_filtered_by_date = tasks_df
+
+# Appliquer les autres filtres
+filtered_df = tasks_df_filtered_by_date[
+    (tasks_df_filtered_by_date["Status"].isin(status_filter)) &
+    (tasks_df_filtered_by_date["Task Type"].isin(tasktype_filter)) &
+    (tasks_df_filtered_by_date["Region"].isin(region_filter))
 ].sort_values(by="Timestamp", ascending=False)
 
 # -----------------------
 # Métriques
 # -----------------------
 st.markdown("---")
-st.markdown("### 📊 Statistiques")
+st.markdown("### Statistiques")
 col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 
 total_jobs = len(filtered_df)
@@ -238,17 +259,17 @@ failed_jobs = (filtered_df["Status"] == "FAILED").sum()
 running_jobs = filtered_df["Status"].isin(["RUNNING", "STARTING", "RUNNABLE", "PENDING"]).sum()
 success_rate = (succeeded_jobs / total_jobs * 100) if total_jobs > 0 else 0
 
-col_m1.metric("📋 Total Jobs", total_jobs)
-col_m2.metric("✅ Succeeded", succeeded_jobs)
-col_m3.metric("❌ Failed", failed_jobs)
-col_m4.metric("🔄 Running", running_jobs)
-col_m5.metric("📈 Success Rate", f"{success_rate:.1f}%")
+col_m1.metric("Total Jobs", total_jobs)
+col_m2.metric("Succeeded", succeeded_jobs)
+col_m3.metric("Failed", failed_jobs)
+col_m4.metric("Running", running_jobs)
+col_m5.metric("Success Rate", f"{success_rate:.1f}%")
 
 # -----------------------
 # Tableau des jobs avec coloration
 # -----------------------
 st.markdown("---")
-st.markdown("### 📋 Liste des Jobs")
+st.markdown("### Liste des Jobs")
 
 def highlight_status(row):
     """Coloration conditionnelle selon le statut"""
@@ -278,14 +299,14 @@ if not filtered_df.empty:
         height=400
     )
 else:
-    st.info("ℹ️ Aucun job ne correspond aux filtres sélectionnés")
+    st.info("Aucun job ne correspond aux filtres sélectionnés")
 
 # -----------------------
 # Détails d'un job et historique
 # -----------------------
 if not filtered_df.empty:
     st.markdown("---")
-    st.markdown("### 🔍 Détails d'un Job")
+    st.markdown("### Détails d'un Job")
 
     # Sélection d'un job
     selected_job_id = st.selectbox(
@@ -319,7 +340,7 @@ if not filtered_df.empty:
                 st.write(f"**Status Reason:** {job_details['Status Reason']}")
 
         # Événement brut (optionnel)
-        with st.expander(f"� Événement AWS complet (JSON)"):
+        with st.expander(f"Événement AWS complet (JSON)"):
             try:
                 # Récupérer le fullEvent depuis les données
                 if 'fullEvent' in job_details:
@@ -333,7 +354,7 @@ if not filtered_df.empty:
 
         # Actions (optionnel - pour Phase 3)
         st.markdown("---")
-        st.markdown("### ⚙️ Actions (Simulation)")
+        st.markdown("### Actions (Simulation)")
 
         col_a1, col_a2 = st.columns([3, 1])
 
@@ -347,7 +368,7 @@ if not filtered_df.empty:
         with col_a2:
             st.write("")  # Spacer
             st.write("")  # Spacer
-            if st.button("🚀 Exécuter", use_container_width=True):
+            if st.button("Exécuter", use_container_width=True):
                 # Historique des actions
                 if "action_log" not in st.session_state:
                     st.session_state.action_log = []
@@ -357,10 +378,10 @@ if not filtered_df.empty:
                     "Action": action,
                     "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
-                st.success(f"✅ Action **{action}** exécutée sur le job **{selected_job_id}** (simulation)")
+                st.success(f"Action **{action}** exécutée sur le job **{selected_job_id}** (simulation)")
 
         # Afficher l'historique des actions
         if "action_log" in st.session_state and st.session_state.action_log:
-            with st.expander("📋 Historique des actions"):
+            with st.expander("Historique des actions"):
                 actions_df = pd.DataFrame(st.session_state.action_log)
                 st.dataframe(actions_df, use_container_width=True)
