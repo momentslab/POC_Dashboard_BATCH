@@ -221,13 +221,16 @@ region_filter = col3.multiselect(
 # Filtre par Date
 date_filter = col4.selectbox(
     "Période",
-    options=["Tout", "Dernier jour", "3 derniers jours", "Dernière semaine"],
+    options=["Tout", "Dernière heure", "Dernier jour", "3 derniers jours", "Dernière semaine"],
     index=0
 )
 
 # Appliquer le filtre de date
 now = datetime.now()
-if date_filter == "Dernier jour":
+if date_filter == "Dernière heure":
+    date_threshold = now - timedelta(hours=1)
+    tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
+elif date_filter == "Dernier jour":
     date_threshold = now - timedelta(days=1)
     tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
 elif date_filter == "3 derniers jours":
