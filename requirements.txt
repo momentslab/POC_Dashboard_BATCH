@@ -5,3 +5,4 @@ matplotlib
 plotly
 boto3
 python-dateutil
+pyckbone
