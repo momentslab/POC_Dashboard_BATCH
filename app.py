@@ -3,6 +3,16 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from dynamo_queries import DynamoDBQueries
+import importlib
+import sys
+
+# Forcer le rechargement du module backbone_actions
+if 'backbone_actions' in sys.modules:
+    import backbone_actions
+    importlib.reload(backbone_actions)
+    from backbone_actions import BackboneActions
+else:
+    from backbone_actions import BackboneActions
 
 # -----------------------
 # Configuration
@@ -111,8 +121,8 @@ def format_jobs_dataframe(jobs):
 
     df = pd.DataFrame(jobs)
 
-    # Convertir timestamp en datetime (timezone-naive pour compatibilité avec les filtres)
-    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_localize(None)
+    # Convertir timestamp en datetime UTC puis en heure locale
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Europe/Paris').dt.tz_localize(None)
 
     # Extraire les noms de queue et job definition
     df['Queue'] = df['jobQueue'].apply(extract_queue_name)
@@ -130,6 +140,10 @@ def format_jobs_dataframe(jobs):
     # Remplacer les valeurs vides par "Unknown"
     df['MediaID'] = df['MediaID'].fillna('Unknown').replace('', 'Unknown')
 
+    # Récupérer le Workspace UID depuis DynamoDB (stocké par la Lambda)
+    df['WorkspaceUID'] = df.get('workspace_uid', pd.Series(['Unknown'] * len(df)))
+    df['WorkspaceUID'] = df['WorkspaceUID'].fillna('Unknown').replace('', 'Unknown')
+
     # Stocker les valeurs originales pour les détails
     df['Queue_Original'] = df['Queue']
     df['JobDef_Original'] = df['JobDef']
@@ -139,6 +153,7 @@ def format_jobs_dataframe(jobs):
         'Media ID': df['MediaID'],
         'Task ID': df['TaskID'],
         'Task Type': df['TaskType'],
+        'Workspace UID': df['WorkspaceUID'],
         'Status': df['status'],
         'Job ID': df['jobId'],
         'Job Name': df['jobName'],
@@ -205,10 +220,12 @@ status_filter = col1.multiselect(
 )
 
 # Filtre par Task Type
+# Exclure "my-batch-queue" des options
+task_type_options = sorted([t for t in tasks_df["Task Type"].unique() if t != "my-batch-queue"])
 tasktype_filter = col2.multiselect(
     "Task Type",
-    options=sorted(tasks_df["Task Type"].unique()),
-    default=tasks_df["Task Type"].unique()
+    options=task_type_options,
+    default=task_type_options
 )
 
 # Filtre par Region
@@ -221,7 +238,7 @@ region_filter = col3.multiselect(
 # Filtre par Date
 date_filter = col4.selectbox(
     "Période",
-    options=["Tout", "Dernière heure", "Dernier jour", "3 derniers jours", "Dernière semaine"],
+    options=["Tout", "Dernière heure", "Dernier jour", "3 derniers jours", "Dernière semaine", "Dernier mois"],
     index=0
 )
 
@@ -238,6 +255,9 @@ elif date_filter == "3 derniers jours":
     tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
 elif date_filter == "Dernière semaine":
     date_threshold = now - timedelta(days=7)
+    tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
+elif date_filter == "Dernier mois":
+    date_threshold = now - timedelta(days=30)
     tasks_df_filtered_by_date = tasks_df[tasks_df["Timestamp"] >= date_threshold]
 else:  # "Tout"
     tasks_df_filtered_by_date = tasks_df
@@ -355,9 +375,69 @@ if not filtered_df.empty:
             except Exception as e:
                 st.error(f"Erreur lors de l'affichage de l'événement : {str(e)}")
 
-        # Actions (optionnel - pour Phase 3)
+        # Actions API
         st.markdown("---")
-        st.markdown("### Actions (Simulation)")
+        st.markdown("### Actions")
+
+        # Initialiser le client API
+        if "backbone_client" not in st.session_state:
+            st.session_state.backbone_client = BackboneActions()
+
+        backbone = st.session_state.backbone_client
+
+        # Récupérer les tâches Backbone pour ce media_id
+        backbone_tasks = []
+        selected_backbone_task_id = None
+        media_id = job_details['Media ID']
+
+        if backbone.is_available() and media_id != "Unknown":
+            try:
+                query_filter = f"eq(media_id,{media_id})"
+                tasks_result = backbone.client.get_tasks(query_filter=query_filter)
+                backbone_tasks = tasks_result.get('data', []) if isinstance(tasks_result, dict) else []
+
+                if backbone_tasks:
+                    st.markdown("**Tâches Backbone trouvées pour ce media:**")
+
+                    # Créer une liste d'options pour le selectbox
+                    task_options = []
+                    for task in backbone_tasks:
+                        task_id = task.get('task_id') or task.get('_id')
+                        task_type = task.get('type', 'unknown')
+                        task_status = task.get('status', 'unknown')
+                        task_options.append({
+                            'id': task_id,
+                            'label': f"{task_type} ({task_status}) - {task_id}",
+                            'type': task_type,
+                            'status': task_status
+                        })
+
+                    # Selectbox pour choisir la tâche
+                    selected_option = st.selectbox(
+                        "Sélectionnez la tâche à utiliser:",
+                        options=range(len(task_options)),
+                        format_func=lambda i: task_options[i]['label'],
+                        key=f"task_selector_{selected_job_id}"
+                    )
+
+                    selected_backbone_task_id = task_options[selected_option]['id']
+                    st.info(f"Tâche sélectionnée: `{selected_backbone_task_id}`")
+                else:
+                    st.warning(f"Aucune tâche Backbone trouvée pour media_id: {media_id}")
+            except Exception as e:
+                st.error(f"Erreur lors de la récupération des tâches Backbone: {str(e)}")
+
+        # Vérifier si l'API est disponible
+        if not backbone.is_available():
+            if backbone.init_error:
+                if "AccessDenied" in backbone.init_error or "not authorized" in backbone.init_error:
+                    st.warning("API BackboneClient : Problème de permissions AWS. Vérifiez vos credentials AWS.")
+                    st.info("Les credentials AWS utilisés n'ont pas les permissions nécessaires pour accéder aux ressources BackboneClient.")
+                else:
+                    st.warning(f"API BackboneClient non disponible : {backbone.init_error}")
+            else:
+                st.warning("API BackboneClient non disponible. Configurez WORKSPACE_UID dans les secrets Streamlit ou variables d'environnement.")
+                st.info("Pour configurer: créez un fichier `.streamlit/secrets.toml` avec `workspace_uid = \"VOTRE_UID\"`")
 
         col_a1, col_a2 = st.columns([3, 1])
 
@@ -372,16 +452,62 @@ if not filtered_df.empty:
             st.write("")  # Spacer
             st.write("")  # Spacer
             if st.button("Exécuter", use_container_width=True):
-                # Historique des actions
-                if "action_log" not in st.session_state:
-                    st.session_state.action_log = []
+                # Utiliser le task_id sélectionné dans Backbone, ou celui extrait du job name
+                task_id = selected_backbone_task_id if selected_backbone_task_id else job_details['Task ID']
+                media_id = job_details['Media ID']
 
-                st.session_state.action_log.append({
-                    "Job ID": selected_job_id,
-                    "Action": action,
-                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-                st.success(f"Action **{action}** exécutée sur le job **{selected_job_id}** (simulation)")
+                # Vérifier que les IDs sont valides
+                if not selected_backbone_task_id and (task_id == "Unknown" or media_id == "Unknown"):
+                    st.error("Aucune tâche Backbone sélectionnée et Task ID/Media ID manquant. Impossible d'exécuter l'action.")
+                elif not backbone.is_available():
+                    st.error("API BackboneClient non disponible.")
+                else:
+                    # Exécuter l'action directement avec le task_id sélectionné
+                    with st.spinner(f"Exécution de l'action {action}..."):
+                        if action == "Abort":
+                            # Appeler directement avec le task_id, sans recherche par media_id
+                            result = backbone.abort_task_direct(task_id)
+                        elif action == "Broken":
+                            # Appeler directement avec le task_id, sans recherche par media_id
+                            result = backbone.break_task_direct(task_id)
+                        elif action == "Restart":
+                            result = backbone.restart_task(task_id, media_id)
+                        elif action == "Restart and set as broken":
+                            result = backbone.restart_and_break_task_direct(task_id, media_id)
+                        else:
+                            result = {"success": False, "error": "Action inconnue"}
+
+                    # Afficher le résultat
+                    if result["success"]:
+                        st.success(f"Action **{action}** exécutée avec succès sur la tâche **{task_id}**")
+
+                        # Historique des actions
+                        if "action_log" not in st.session_state:
+                            st.session_state.action_log = []
+
+                        st.session_state.action_log.append({
+                            "Task ID": task_id,
+                            "Media ID": media_id,
+                            "Job ID": selected_job_id,
+                            "Action": action,
+                            "Status": "Success",
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                    else:
+                        st.error(f"Erreur lors de l'exécution de l'action: {result.get('error', 'Erreur inconnue')}")
+
+                        # Historique des actions (même en cas d'erreur)
+                        if "action_log" not in st.session_state:
+                            st.session_state.action_log = []
+
+                        st.session_state.action_log.append({
+                            "Task ID": task_id,
+                            "Media ID": media_id,
+                            "Job ID": selected_job_id,
+                            "Action": action,
+                            "Status": f"Error: {result.get('error', 'Unknown')}",
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
 
         # Afficher l'historique des actions
         if "action_log" in st.session_state and st.session_state.action_log:

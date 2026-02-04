@@ -34,18 +34,18 @@ class DynamoDBQueries:
         Returns:
             Liste de tous les items (jobs)
         """
-        print(f"📥 Récupération de tous les jobs depuis {self.table_name}...")
-        
+        print(f"Récupération de tous les jobs depuis {self.table_name}...")
+
         response = self.table.scan()
         items = response['Items']
-        
+
         # Gérer la pagination (si > 1MB de données)
         while 'LastEvaluatedKey' in response:
             print(f"   Pagination... {len(items)} items récupérés jusqu'à présent")
             response = self.table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
             items.extend(response['Items'])
-        
-        print(f"✅ {len(items)} jobs récupérés au total")
+
+        print(f"{len(items)} jobs récupérés au total")
         return items
     
     def get_failed_jobs(self) -> List[Dict]:
@@ -55,21 +55,21 @@ class DynamoDBQueries:
         Returns:
             Liste des jobs en échec
         """
-        print(f"📥 Récupération des jobs FAILED...")
-        
+        print(f"Récupération des jobs FAILED...")
+
         response = self.table.scan(
             FilterExpression=Attr('status').eq('FAILED')
         )
         items = response['Items']
-        
+
         while 'LastEvaluatedKey' in response:
             response = self.table.scan(
                 ExclusiveStartKey=response['LastEvaluatedKey'],
                 FilterExpression=Attr('status').eq('FAILED')
             )
             items.extend(response['Items'])
-        
-        print(f"✅ {len(items)} jobs FAILED récupérés")
+
+        print(f"{len(items)} jobs FAILED récupérés")
         return items
     
     def get_jobs_by_status(self, status: str) -> List[Dict]:
@@ -82,21 +82,21 @@ class DynamoDBQueries:
         Returns:
             Liste des jobs avec ce statut
         """
-        print(f"📥 Récupération des jobs avec statut '{status}'...")
-        
+        print(f"Récupération des jobs avec statut '{status}'...")
+
         response = self.table.scan(
             FilterExpression=Attr('status').eq(status)
         )
         items = response['Items']
-        
+
         while 'LastEvaluatedKey' in response:
             response = self.table.scan(
                 ExclusiveStartKey=response['LastEvaluatedKey'],
                 FilterExpression=Attr('status').eq(status)
             )
             items.extend(response['Items'])
-        
-        print(f"✅ {len(items)} jobs avec statut '{status}' récupérés")
+
+        print(f"{len(items)} jobs avec statut '{status}' récupérés")
         return items
     
     def get_jobs_by_queue(self, queue_name: str) -> List[Dict]:
@@ -109,21 +109,21 @@ class DynamoDBQueries:
         Returns:
             Liste des jobs de cette queue
         """
-        print(f"📥 Récupération des jobs de la queue '{queue_name}'...")
-        
+        print(f"Récupération des jobs de la queue '{queue_name}'...")
+
         response = self.table.scan(
             FilterExpression=Attr('jobQueue').contains(queue_name)
         )
         items = response['Items']
-        
+
         while 'LastEvaluatedKey' in response:
             response = self.table.scan(
                 ExclusiveStartKey=response['LastEvaluatedKey'],
                 FilterExpression=Attr('jobQueue').contains(queue_name)
             )
             items.extend(response['Items'])
-        
-        print(f"✅ {len(items)} jobs de la queue '{queue_name}' récupérés")
+
+        print(f"{len(items)} jobs de la queue '{queue_name}' récupérés")
         return items
     
     def get_jobs_by_time_range(self, hours: int = 24) -> List[Dict]:
@@ -137,8 +137,8 @@ class DynamoDBQueries:
             Liste des jobs récents
         """
         cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
-        print(f"📥 Récupération des jobs depuis {cutoff}...")
-        
+        print(f"Récupération des jobs depuis {cutoff}...")
+
         response = self.table.scan(
             FilterExpression=Attr('timestamp').gt(cutoff)
         )
@@ -151,7 +151,7 @@ class DynamoDBQueries:
             )
             items.extend(response['Items'])
 
-        print(f"✅ {len(items)} jobs récents récupérés")
+        print(f"{len(items)} jobs récents récupérés")
         return items
 
     def get_latest_state_per_job(self) -> List[Dict]:
@@ -164,7 +164,7 @@ class DynamoDBQueries:
         Returns:
             Liste des jobs (un seul item par jobId - le dernier état)
         """
-        print(f"📥 Récupération de tous les jobs...")
+        print(f"Récupération de tous les jobs...")
 
         # Récupérer tous les items (avec historique)
         all_items = self.get_all_jobs()
@@ -189,8 +189,8 @@ class DynamoDBQueries:
         # Convertir le dictionnaire en liste
         result = list(latest_jobs.values())
 
-        print(f"✅ {len(result)} jobs uniques récupérés (dernier état seulement)")
-        print(f"📊 {len(all_items)} items au total dans DynamoDB (avec historique)")
+        print(f"{len(result)} jobs uniques récupérés (dernier état seulement)")
+        print(f"{len(all_items)} items au total dans DynamoDB (avec historique)")
 
         return result
 
@@ -207,7 +207,7 @@ class DynamoDBQueries:
         Returns:
             Liste contenant l'état actuel du job
         """
-        print(f"📥 Récupération du job '{job_id}'...")
+        print(f"Récupération du job '{job_id}'...")
 
         try:
             response = self.table.get_item(
@@ -215,13 +215,13 @@ class DynamoDBQueries:
             )
 
             if 'Item' in response:
-                print(f"✅ Job trouvé")
+                print(f"Job trouvé")
                 return [response['Item']]  # Retourner une liste pour compatibilité
             else:
-                print(f"⚠️ Job non trouvé")
+                print(f"Job non trouvé")
                 return []
         except Exception as e:
-            print(f"❌ Erreur lors de la récupération : {str(e)}")
+            print(f"Erreur lors de la récupération : {str(e)}")
             return []
 
     def get_statistics(self) -> Dict:
@@ -231,7 +231,7 @@ class DynamoDBQueries:
         Returns:
             Dictionnaire avec les statistiques
         """
-        print(f"📊 Calcul des statistiques...")
+        print(f"Calcul des statistiques...")
 
         items = self.get_latest_state_per_job()
 
@@ -255,7 +255,7 @@ class DynamoDBQueries:
 
         stats['success_rate'] = (stats['succeeded'] / stats['total'] * 100) if stats['total'] > 0 else 0
 
-        print(f"✅ Statistiques calculées : {stats['total']} jobs au total")
+        print(f"Statistiques calculées : {stats['total']} jobs au total")
         return stats
 
     def test_connection(self) -> bool:
@@ -267,13 +267,13 @@ class DynamoDBQueries:
         """
         try:
             response = self.table.scan(Limit=1)
-            print(f"✅ Connexion à DynamoDB réussie !")
+            print(f"Connexion à DynamoDB réussie !")
             print(f"   Table : {self.table_name}")
             print(f"   Région : {self.region}")
             print(f"   Items dans la table : {self.table.item_count}")
             return True
         except Exception as e:
-            print(f"❌ Erreur de connexion : {str(e)}")
+            print(f"Erreur de connexion : {str(e)}")
             return False
 
 
@@ -286,7 +286,7 @@ if __name__ == "__main__":
     if db.test_connection():
         # Récupérer quelques statistiques
         stats = db.get_statistics()
-        print(f"\n📊 Statistiques :")
+        print(f"\nStatistiques :")
         print(f"   Total jobs : {stats['total']}")
         print(f"   Succeeded : {stats['succeeded']}")
         print(f"   Failed : {stats['failed']}")
