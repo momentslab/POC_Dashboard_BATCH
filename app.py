@@ -131,8 +131,18 @@ def format_jobs_dataframe(jobs):
     # Créer le type de tâche formaté
     df['TaskType'] = df.apply(lambda row: format_task_type(row['Queue'], row['JobDef']), axis=1)
 
-    # Extraire le Task ID depuis le jobName
-    df['TaskID'] = df['jobName'].apply(extract_task_id)
+    # Récupérer le Task ID depuis DynamoDB (stocké par la Lambda)
+    # Si non disponible, extraire depuis le Job Name (fallback)
+    def get_task_id(row):
+        # D'abord essayer depuis DynamoDB
+        task_id = row.get('task_id')
+        if task_id and task_id != '':
+            return task_id
+
+        # Sinon extraire depuis le Job Name (fallback pour anciens jobs)
+        return extract_task_id(row.get('jobName', ''))
+
+    df['TaskID'] = df.apply(get_task_id, axis=1)
 
     # Récupérer le Media ID depuis DynamoDB (stocké par la Lambda)
     # Si le champ n'existe pas, afficher "Unknown"
@@ -141,8 +151,27 @@ def format_jobs_dataframe(jobs):
     df['MediaID'] = df['MediaID'].fillna('Unknown').replace('', 'Unknown')
 
     # Récupérer le Workspace UID depuis DynamoDB (stocké par la Lambda)
-    df['WorkspaceUID'] = df.get('workspace_uid', pd.Series(['Unknown'] * len(df)))
-    df['WorkspaceUID'] = df['WorkspaceUID'].fillna('Unknown').replace('', 'Unknown')
+    # Si non disponible, extraire depuis le Job Name (format: "workspace-jobid-taskid")
+    # ATTENTION: "recognise" et "assembly" ne sont PAS des workspace UIDs
+    def get_workspace_uid(row):
+        # D'abord essayer depuis DynamoDB
+        workspace = row.get('workspace_uid')
+        if workspace and workspace != '':
+            return workspace
+
+        # Sinon extraire depuis le Job Name (fallback pour anciens jobs)
+        job_name = row.get('jobName')
+        if pd.isna(job_name) or job_name == '':
+            return 'Unknown'
+        parts = str(job_name).split('-')
+        if len(parts) > 0 and parts[0]:
+            first_part = parts[0]
+            # Exclure les task types qui ne sont pas des workspaces
+            if first_part not in ['recognise', 'assembly']:
+                return first_part
+        return 'Unknown'
+
+    df['WorkspaceUID'] = df.apply(get_workspace_uid, axis=1)
 
     # Stocker les valeurs originales pour les détails
     df['Queue_Original'] = df['Queue']
@@ -161,7 +190,8 @@ def format_jobs_dataframe(jobs):
         'Timestamp': df['timestamp'],
         'Status Reason': df.get('statusReason', ''),
         'Queue_Original': df['Queue_Original'],
-        'JobDef_Original': df['JobDef_Original']
+        'JobDef_Original': df['JobDef_Original'],
+        'fullEvent': df.get('fullEvent', '')  # Garder le fullEvent pour l'affichage JSON
     })
 
     return df_display
@@ -210,7 +240,7 @@ with st.spinner("Chargement des données depuis DynamoDB..."):
 # Filtrage des jobs
 # -----------------------
 st.markdown("### Filtres")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 # Filtre par Status
 status_filter = col1.multiselect(
@@ -235,8 +265,16 @@ region_filter = col3.multiselect(
     default=tasks_df["Region"].unique()
 )
 
+# Filtre par Workspace UID
+workspace_uids = tasks_df["Workspace UID"].dropna().unique()
+workspace_filter = col4.multiselect(
+    "Workspace UID",
+    options=sorted([str(w) for w in workspace_uids]),
+    default=list(workspace_uids)
+)
+
 # Filtre par Date
-date_filter = col4.selectbox(
+date_filter = col5.selectbox(
     "Période",
     options=["Tout", "Dernière heure", "Dernier jour", "3 derniers jours", "Dernière semaine", "Dernier mois"],
     index=0
@@ -263,10 +301,12 @@ else:  # "Tout"
     tasks_df_filtered_by_date = tasks_df
 
 # Appliquer les autres filtres
+# Si un filtre est vide, on considère que tous les éléments sont acceptés
 filtered_df = tasks_df_filtered_by_date[
-    (tasks_df_filtered_by_date["Status"].isin(status_filter)) &
-    (tasks_df_filtered_by_date["Task Type"].isin(tasktype_filter)) &
-    (tasks_df_filtered_by_date["Region"].isin(region_filter))
+    (tasks_df_filtered_by_date["Status"].isin(status_filter) if status_filter else True) &
+    (tasks_df_filtered_by_date["Task Type"].isin(tasktype_filter) if tasktype_filter else True) &
+    (tasks_df_filtered_by_date["Region"].isin(region_filter) if region_filter else True) &
+    (tasks_df_filtered_by_date["Workspace UID"].isin(workspace_filter) if workspace_filter else True)
 ].sort_values(by="Timestamp", ascending=False)
 
 # -----------------------
@@ -312,8 +352,8 @@ def highlight_status(row):
         return ['background-color: #868e96; color: white' for _ in row]  # Gris
 
 if not filtered_df.empty:
-    # Colonnes à afficher (Media ID, Task ID, Task Type, Status en premier)
-    display_columns = ['Media ID', 'Task ID', 'Task Type', 'Status', 'Job ID', 'Job Name', 'Region', 'Timestamp', 'Status Reason']
+    # Colonnes à afficher (Media ID, Task ID, Task Type, Workspace UID, Status en premier)
+    display_columns = ['Media ID', 'Task ID', 'Task Type', 'Workspace UID', 'Status', 'Job ID', 'Job Name', 'Region', 'Timestamp', 'Status Reason']
 
     # Afficher le tableau avec coloration
     st.dataframe(
@@ -347,6 +387,7 @@ if not filtered_df.empty:
         with col_d1:
             st.markdown("**Informations générales**")
             st.write(f"**Task Type:** {job_details['Task Type']}")
+            st.write(f"**Workspace UID:** {job_details.get('Workspace UID', 'Unknown')}")
             st.write(f"**Media ID:** `{job_details['Media ID']}`")
             st.write(f"**Task ID:** `{job_details['Task ID']}`")
             st.write(f"**Job ID:** {job_details['Job ID']}")
@@ -365,10 +406,11 @@ if not filtered_df.empty:
         # Événement brut (optionnel)
         with st.expander(f"Événement AWS complet (JSON)"):
             try:
-                # Récupérer le fullEvent depuis les données
-                if 'fullEvent' in job_details:
+                # Récupérer le fullEvent depuis le DataFrame original (tasks_df)
+                full_job_data = tasks_df[tasks_df["Job ID"] == selected_job_id].iloc[0]
+                if 'fullEvent' in full_job_data and full_job_data['fullEvent']:
                     import json
-                    full_event = json.loads(job_details['fullEvent'])
+                    full_event = json.loads(full_job_data['fullEvent'])
                     st.json(full_event)
                 else:
                     st.info("Événement complet non disponible")
@@ -397,8 +439,6 @@ if not filtered_df.empty:
                 backbone_tasks = tasks_result.get('data', []) if isinstance(tasks_result, dict) else []
 
                 if backbone_tasks:
-                    st.markdown("**Tâches Backbone trouvées pour ce media:**")
-
                     # Créer une liste d'options pour le selectbox
                     task_options = []
                     for task in backbone_tasks:
