@@ -52,17 +52,34 @@ class BackboneActions:
     def is_available(self) -> bool:
         """Vérifie si le client API est disponible"""
         return self.client is not None and self.workspace_uid is not None
-    
-    def abort_task_direct(self, task_id: str) -> Dict[str, Any]:
+
+    def set_aws_region(self, region: str) -> None:
+        """
+        Met à jour la région AWS avant d'exécuter une action
+
+        Args:
+            region: Région AWS (ex: 'eu-west-1', 'us-east-1')
+        """
+        if region and region != 'Unknown':
+            os.environ['AWS_DEFAULT_REGION'] = region
+            os.environ['AWS_REGION'] = region
+            print(f"✅ Région AWS mise à jour : {region}")
+
+    def abort_task_direct(self, task_id: str, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Annule une tâche directement avec son task_id (sans recherche par media_id)
 
         Args:
             task_id: ID exact de la tâche à annuler
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
+        # Mettre à jour la région si fournie
+        if region:
+            self.set_aws_region(region)
+
         if not self.is_available():
             return {"success": False, "error": "BackboneClient non disponible"}
 
@@ -72,17 +89,22 @@ class BackboneActions:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def abort_task(self, task_id: str, media_id: Optional[str] = None) -> Dict[str, Any]:
+    def abort_task(self, task_id: str, media_id: Optional[str] = None, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Annule une tâche
 
         Args:
             task_id: ID de la tâche à annuler (peut être inexact, on cherchera par media_id si fourni)
             media_id: ID du media (optionnel, utilisé pour retrouver la vraie tâche)
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
+        # Mettre à jour la région si fournie
+        if region:
+            self.set_aws_region(region)
+
         if not self.is_available():
             return {"success": False, "error": "BackboneClient non disponible"}
 
@@ -106,16 +128,21 @@ class BackboneActions:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def break_task_direct(self, task_id: str) -> Dict[str, Any]:
+    def break_task_direct(self, task_id: str, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Marque une tâche comme cassée directement avec son task_id (sans recherche par media_id)
 
         Args:
             task_id: ID exact de la tâche à marquer comme cassée
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
+        # Mettre à jour la région si fournie
+        if region:
+            self.set_aws_region(region)
+
         if not self.is_available():
             return {"success": False, "error": "BackboneClient non disponible"}
 
@@ -125,17 +152,22 @@ class BackboneActions:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def break_task(self, task_id: str, media_id: Optional[str] = None) -> Dict[str, Any]:
+    def break_task(self, task_id: str, media_id: Optional[str] = None, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Marque une tâche comme cassée
 
         Args:
             task_id: ID de la tâche à marquer comme cassée (peut être inexact, on cherchera par media_id si fourni)
             media_id: ID du media (optionnel, utilisé pour retrouver la vraie tâche)
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
+        # Mettre à jour la région si fournie
+        if region:
+            self.set_aws_region(region)
+
         if not self.is_available():
             return {"success": False, "error": "BackboneClient non disponible"}
 
@@ -199,17 +231,22 @@ class BackboneActions:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def restart_task(self, task_id: str, media_id: str) -> Dict[str, Any]:
+    def restart_task(self, task_id: str, media_id: str, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Relance une tâche en récupérant ses paramètres originaux
 
         Args:
             task_id: ID de la tâche à relancer
             media_id: ID du media
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
+        # Mettre à jour la région si fournie
+        if region:
+            self.set_aws_region(region)
+
         if not self.is_available():
             return {"success": False, "error": "BackboneClient non disponible"}
 
@@ -261,24 +298,29 @@ class BackboneActions:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
     
-    def restart_and_break_task_direct(self, task_id: str, media_id: str) -> Dict[str, Any]:
+    def restart_and_break_task_direct(self, task_id: str, media_id: str, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Marque une tâche comme cassée puis la relance (version directe sans recherche)
 
         Args:
             task_id: ID exact de la tâche
             media_id: ID du media
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
-        # Marquer comme cassée directement
+        # Mettre à jour la région si fournie (une seule fois au début)
+        if region:
+            self.set_aws_region(region)
+
+        # Marquer comme cassée directement (sans passer region car déjà fait)
         break_result = self.break_task_direct(task_id)
 
         if not break_result["success"]:
             return {"success": False, "error": f"Échec du break: {break_result['error']}"}
 
-        # Relancer la tâche
+        # Relancer la tâche (sans passer region car déjà fait)
         restart_result = self.restart_task(task_id, media_id)
 
         if not restart_result["success"]:
@@ -286,24 +328,29 @@ class BackboneActions:
 
         return {"success": True, "result": {"break": break_result["result"], "restart": restart_result["result"]}}
 
-    def restart_and_break_task(self, task_id: str, media_id: str) -> Dict[str, Any]:
+    def restart_and_break_task(self, task_id: str, media_id: str, region: Optional[str] = None) -> Dict[str, Any]:
         """
         Marque une tâche comme cassée puis la relance
 
         Args:
             task_id: ID de la tâche
             media_id: ID du media
+            region: Région AWS (optionnel)
 
         Returns:
             Résultat de l'opération
         """
-        # Marquer comme cassée (passer media_id pour retrouver la vraie tâche)
+        # Mettre à jour la région si fournie (une seule fois au début)
+        if region:
+            self.set_aws_region(region)
+
+        # Marquer comme cassée (passer media_id pour retrouver la vraie tâche, sans passer region car déjà fait)
         break_result = self.break_task(task_id, media_id)
 
         if not break_result["success"]:
             return {"success": False, "error": f"Échec du break: {break_result['error']}"}
 
-        # Relancer la tâche
+        # Relancer la tâche (sans passer region car déjà fait)
         restart_result = self.restart_task(task_id, media_id)
 
         if not restart_result["success"]:

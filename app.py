@@ -495,6 +495,7 @@ if not filtered_df.empty:
                 # Utiliser le task_id sélectionné dans Backbone, ou celui extrait du job name
                 task_id = selected_backbone_task_id if selected_backbone_task_id else job_details['Task ID']
                 media_id = job_details['Media ID']
+                region = job_details['Region']  # Récupérer la région du job
 
                 # Vérifier que les IDs sont valides
                 if not selected_backbone_task_id and (task_id == "Unknown" or media_id == "Unknown"):
@@ -503,17 +504,18 @@ if not filtered_df.empty:
                     st.error("API BackboneClient non disponible.")
                 else:
                     # Exécuter l'action directement avec le task_id sélectionné
+                    # La région est passée à chaque action pour mettre à jour AWS_DEFAULT_REGION
                     with st.spinner(f"Exécution de l'action {action}..."):
                         if action == "Abort":
-                            # Appeler directement avec le task_id, sans recherche par media_id
-                            result = backbone.abort_task_direct(task_id)
+                            # Appeler directement avec le task_id et la région
+                            result = backbone.abort_task_direct(task_id, region=region)
                         elif action == "Broken":
-                            # Appeler directement avec le task_id, sans recherche par media_id
-                            result = backbone.break_task_direct(task_id)
+                            # Appeler directement avec le task_id et la région
+                            result = backbone.break_task_direct(task_id, region=region)
                         elif action == "Restart":
-                            result = backbone.restart_task(task_id, media_id)
+                            result = backbone.restart_task(task_id, media_id, region=region)
                         elif action == "Restart and set as broken":
-                            result = backbone.restart_and_break_task_direct(task_id, media_id)
+                            result = backbone.restart_and_break_task_direct(task_id, media_id, region=region)
                         else:
                             result = {"success": False, "error": "Action inconnue"}
 
