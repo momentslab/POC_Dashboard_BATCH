@@ -20,6 +20,42 @@ else:
 st.set_page_config(page_title="AWS Batch Monitoring Dashboard", layout="wide")
 
 # -----------------------
+# Initialisation de session_state pour la persistance
+# -----------------------
+# Initialiser les filtres s'ils n'existent pas
+if 'status_filter' not in st.session_state:
+    st.session_state.status_filter = None  # None = tous sélectionnés par défaut
+
+if 'tasktype_filter' not in st.session_state:
+    st.session_state.tasktype_filter = None  # None = tous sélectionnés par défaut
+
+if 'region_filter' not in st.session_state:
+    st.session_state.region_filter = None  # None = tous sélectionnés par défaut
+
+if 'workspace_filter' not in st.session_state:
+    st.session_state.workspace_filter = None  # None = tous sélectionnés par défaut
+
+if 'date_filter' not in st.session_state:
+    st.session_state.date_filter = "Tout"
+
+if 'selected_job_id' not in st.session_state:
+    st.session_state.selected_job_id = None
+
+if 'selected_action' not in st.session_state:
+    st.session_state.selected_action = "Restart"
+
+# Dictionnaire pour stocker les tâches sélectionnées par job
+if 'selected_backbone_tasks' not in st.session_state:
+    st.session_state.selected_backbone_tasks = {}
+
+# Pagination
+if 'page_size' not in st.session_state:
+    st.session_state.page_size = 20  # Par défaut 20 jobs par page
+
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = 1  # Page 1 par défaut
+
+# -----------------------
 # Fonctions utilitaires
 # -----------------------
 @st.cache_data(ttl=60)  # Cache pendant 60 secondes
@@ -32,7 +68,7 @@ def load_jobs_from_dynamodb():
 def extract_queue_name(queue_arn):
     """Extrait le nom de la queue depuis l'ARN"""
     if not queue_arn or not isinstance(queue_arn, str):
-        return "Unknown"
+        return "None"
     # ARN format: arn:aws:batch:region:account:job-queue/queue-name
     parts = queue_arn.split('/')
     if len(parts) > 1:
@@ -42,7 +78,7 @@ def extract_queue_name(queue_arn):
 def extract_job_definition_name(job_def_arn):
     """Extrait le nom de la job definition depuis l'ARN"""
     if not job_def_arn or not isinstance(job_def_arn, str):
-        return "Unknown"
+        return "None"
     # ARN format: arn:aws:batch:region:account:job-definition/name:version
     parts = job_def_arn.split('/')
     if len(parts) > 1:
@@ -63,10 +99,10 @@ def extract_task_id(job_name):
         job_name: Nom du job AWS Batch
 
     Returns:
-        Task ID extrait ou "Unknown"
+        Task ID extrait ou "None"
     """
     if not job_name or not isinstance(job_name, str):
-        return "Unknown"
+        return "None"
 
     # Séparer par tirets
     parts = job_name.split('-')
@@ -76,8 +112,8 @@ def extract_task_id(job_name):
         if len(part) == 24 and all(c in '0123456789abcdef' for c in part.lower()):
             return part
 
-    # Si pas trouvé, retourner "Unknown"
-    return "Unknown"
+    # Si pas trouvé, retourner "None"
+    return "None"
 
 def format_task_type(queue_name, job_def_name):
     """
@@ -112,7 +148,7 @@ def format_task_type(queue_name, job_def_name):
         return "Ingest"
 
     # Par défaut, retourner le nom de la queue formaté
-    return queue_name if queue_name != "Unknown" else job_def_name
+    return queue_name if queue_name != "None" else job_def_name
 
 def format_jobs_dataframe(jobs):
     """Transforme les données DynamoDB en DataFrame pour le dashboard"""
@@ -145,10 +181,16 @@ def format_jobs_dataframe(jobs):
     df['TaskID'] = df.apply(get_task_id, axis=1)
 
     # Récupérer le Media ID depuis DynamoDB (stocké par la Lambda)
-    # Si le champ n'existe pas, afficher "Unknown"
-    df['MediaID'] = df.get('media_id', pd.Series(['Unknown'] * len(df)))
-    # Remplacer les valeurs vides par "Unknown"
-    df['MediaID'] = df['MediaID'].fillna('Unknown').replace('', 'Unknown')
+    # Si le champ n'existe pas, afficher "None"
+    df['MediaID'] = df.get('media_id', pd.Series(['None'] * len(df)))
+    # Remplacer les valeurs vides par "None"
+    df['MediaID'] = df['MediaID'].fillna('None').replace('', 'None')
+
+    # Récupérer l'Assembly ID depuis DynamoDB (stocké par la Lambda)
+    # Si le champ n'existe pas, afficher "None"
+    df['AssemblyID'] = df.get('assembly_id', pd.Series(['None'] * len(df)))
+    # Remplacer les valeurs vides par "None"
+    df['AssemblyID'] = df['AssemblyID'].fillna('None').replace('', 'None')
 
     # Récupérer le Workspace UID depuis DynamoDB (stocké par la Lambda)
     # Si non disponible, extraire depuis le Job Name (format: "workspace-jobid-taskid")
@@ -162,14 +204,14 @@ def format_jobs_dataframe(jobs):
         # Sinon extraire depuis le Job Name (fallback pour anciens jobs)
         job_name = row.get('jobName')
         if pd.isna(job_name) or job_name == '':
-            return 'Unknown'
+            return 'None'
         parts = str(job_name).split('-')
         if len(parts) > 0 and parts[0]:
             first_part = parts[0]
             # Exclure les task types qui ne sont pas des workspaces
             if first_part not in ['recognise', 'assembly']:
                 return first_part
-        return 'Unknown'
+        return 'None'
 
     df['WorkspaceUID'] = df.apply(get_workspace_uid, axis=1)
 
@@ -177,9 +219,10 @@ def format_jobs_dataframe(jobs):
     df['Queue_Original'] = df['Queue']
     df['JobDef_Original'] = df['JobDef']
 
-    # Renommer et sélectionner les colonnes (Media ID, Task ID, Task Type, Status en premier)
+    # Renommer et sélectionner les colonnes (Media ID, Assembly ID, Task ID, Task Type, Status en premier)
     df_display = pd.DataFrame({
         'Media ID': df['MediaID'],
+        'Assembly ID': df['AssemblyID'],
         'Task ID': df['TaskID'],
         'Task Type': df['TaskType'],
         'Workspace UID': df['WorkspaceUID'],
@@ -243,42 +286,65 @@ st.markdown("### Filtres")
 col1, col2, col3, col4, col5 = st.columns(5)
 
 # Filtre par Status
+all_statuses = sorted(tasks_df["Status"].unique())
+# Utiliser session_state ou tous par défaut
+default_statuses = st.session_state.status_filter if st.session_state.status_filter is not None else all_statuses
+# Filtrer les valeurs qui n'existent plus
+default_statuses = [s for s in default_statuses if s in all_statuses]
 status_filter = col1.multiselect(
     "Status",
-    options=sorted(tasks_df["Status"].unique()),
-    default=tasks_df["Status"].unique()
+    options=all_statuses,
+    default=default_statuses
 )
+st.session_state.status_filter = status_filter
 
 # Filtre par Task Type
 # Exclure "my-batch-queue" des options
 task_type_options = sorted([t for t in tasks_df["Task Type"].unique() if t != "my-batch-queue"])
+default_tasktypes = st.session_state.tasktype_filter if st.session_state.tasktype_filter is not None else task_type_options
+# Filtrer les valeurs qui n'existent plus
+default_tasktypes = [t for t in default_tasktypes if t in task_type_options]
 tasktype_filter = col2.multiselect(
     "Task Type",
     options=task_type_options,
-    default=task_type_options
+    default=default_tasktypes
 )
+st.session_state.tasktype_filter = tasktype_filter
 
 # Filtre par Region
+all_regions = sorted(tasks_df["Region"].unique())
+default_regions = st.session_state.region_filter if st.session_state.region_filter is not None else all_regions
+# Filtrer les valeurs qui n'existent plus
+default_regions = [r for r in default_regions if r in all_regions]
 region_filter = col3.multiselect(
     "Region",
-    options=sorted(tasks_df["Region"].unique()),
-    default=tasks_df["Region"].unique()
+    options=all_regions,
+    default=default_regions
 )
+st.session_state.region_filter = region_filter
 
 # Filtre par Workspace UID
 workspace_uids = tasks_df["Workspace UID"].dropna().unique()
+all_workspaces = sorted([str(w) for w in workspace_uids])
+default_workspaces = st.session_state.workspace_filter if st.session_state.workspace_filter is not None else all_workspaces
+# Filtrer les valeurs qui n'existent plus
+default_workspaces = [w for w in default_workspaces if w in all_workspaces]
 workspace_filter = col4.multiselect(
     "Workspace UID",
-    options=sorted([str(w) for w in workspace_uids]),
-    default=list(workspace_uids)
+    options=all_workspaces,
+    default=default_workspaces
 )
+st.session_state.workspace_filter = workspace_filter
 
 # Filtre par Date
+date_options = ["Tout", "Dernière heure", "Dernier jour", "3 derniers jours", "Dernière semaine", "Dernier mois"]
+default_date_index = date_options.index(st.session_state.date_filter) if st.session_state.date_filter in date_options else 0
 date_filter = col5.selectbox(
     "Période",
-    options=["Tout", "Dernière heure", "Dernier jour", "3 derniers jours", "Dernière semaine", "Dernier mois"],
-    index=0
+    options=date_options,
+    index=default_date_index
 )
+st.session_state.date_filter = date_filter
 
 # Appliquer le filtre de date
 now = datetime.now()
@@ -334,6 +400,31 @@ col_m5.metric("Success Rate", f"{success_rate:.1f}%")
 st.markdown("---")
 st.markdown("### Liste des Jobs")
 
+# Contrôles de pagination
+col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+
+with col_p1:
+    # Sélecteur du nombre de jobs par page
+    page_size_options = [20, 50, 100]
+    selected_page_size = st.selectbox(
+        "Jobs par page:",
+        options=page_size_options,
+        index=page_size_options.index(st.session_state.page_size),
+        key="page_size_selector"
+    )
+
+    # Mettre à jour page_size si changé
+    if selected_page_size != st.session_state.page_size:
+        st.session_state.page_size = selected_page_size
+        st.session_state.current_page = 1  # Réinitialiser à la page 1
+        st.rerun()
+
+with col_p2:
+    st.write("")  # Spacer
+
+with col_p3:
+    st.write("")  # Spacer
+
 def highlight_status(row):
     """Coloration conditionnelle selon le statut"""
     status = row["Status"]
@@ -352,15 +443,61 @@ def highlight_status(row):
         return ['background-color: #868e96; color: white' for _ in row]  # Gris
 
 if not filtered_df.empty:
-    # Colonnes à afficher (Media ID, Task ID, Task Type, Workspace UID, Status en premier)
-    display_columns = ['Media ID', 'Task ID', 'Task Type', 'Workspace UID', 'Status', 'Job ID', 'Job Name', 'Region', 'Timestamp', 'Status Reason']
+    # Calculer la pagination
+    total_jobs = len(filtered_df)
+    total_pages = (total_jobs + st.session_state.page_size - 1) // st.session_state.page_size  # Arrondi supérieur
+
+    # S'assurer que current_page est dans les limites
+    if st.session_state.current_page > total_pages:
+        st.session_state.current_page = total_pages
+    if st.session_state.current_page < 1:
+        st.session_state.current_page = 1
+
+    # Calculer les indices de début et fin
+    start_idx = (st.session_state.current_page - 1) * st.session_state.page_size
+    end_idx = min(start_idx + st.session_state.page_size, total_jobs)
+
+    # Extraire la page actuelle
+    paginated_df = filtered_df.iloc[start_idx:end_idx]
+
+    # Afficher les informations de pagination
+    st.info(f"Page {st.session_state.current_page} sur {total_pages} | Affichage des jobs {start_idx + 1} à {end_idx} sur {total_jobs}")
+
+    # Colonnes à afficher (Media ID, Assembly ID, Task ID, Task Type, Workspace UID, Status en premier)
+    display_columns = ['Media ID', 'Assembly ID', 'Task ID', 'Task Type', 'Workspace UID', 'Status', 'Job ID', 'Job Name', 'Region', 'Timestamp', 'Status Reason']
 
     # Afficher le tableau avec coloration
     st.dataframe(
-        filtered_df[display_columns].style.apply(highlight_status, axis=1),
+        paginated_df[display_columns].style.apply(highlight_status, axis=1),
         use_container_width=True,
         height=400
     )
+
+    # Boutons de navigation
+    col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 1, 1, 1])
+
+    with col_nav1:
+        if st.button("Première", disabled=(st.session_state.current_page == 1), use_container_width=True):
+            st.session_state.current_page = 1
+            st.rerun()
+
+    with col_nav2:
+        if st.button("Précédente", disabled=(st.session_state.current_page == 1), use_container_width=True):
+            st.session_state.current_page -= 1
+            st.rerun()
+
+    with col_nav3:
+        st.write(f"**Page {st.session_state.current_page}/{total_pages}**")
+
+    with col_nav4:
+        if st.button("Suivante", disabled=(st.session_state.current_page == total_pages), use_container_width=True):
+            st.session_state.current_page += 1
+            st.rerun()
+
+    with col_nav5:
+        if st.button("Dernière", disabled=(st.session_state.current_page == total_pages), use_container_width=True):
+            st.session_state.current_page = total_pages
+            st.rerun()
 else:
     st.info("Aucun job ne correspond aux filtres sélectionnés")
 
@@ -372,11 +509,22 @@ if not filtered_df.empty:
     st.markdown("### Détails d'un Job")
 
     # Sélection d'un job
+    job_ids = filtered_df["Job ID"].tolist()
+
+    # Déterminer l'index par défaut
+    default_index = 0
+    if st.session_state.selected_job_id and st.session_state.selected_job_id in job_ids:
+        default_index = job_ids.index(st.session_state.selected_job_id)
+
     selected_job_id = st.selectbox(
         "Sélectionner un Job ID",
-        options=filtered_df["Job ID"].tolist(),
-        format_func=lambda x: f"{x} - {filtered_df[filtered_df['Job ID']==x]['Job Name'].iloc[0]}"
+        options=job_ids,
+        format_func=lambda x: f"{x} - {filtered_df[filtered_df['Job ID']==x]['Job Name'].iloc[0]}",
+        index=default_index
     )
+
+    # Mettre à jour session_state
+    st.session_state.selected_job_id = selected_job_id
 
     if selected_job_id:
         # Afficher les détails du job sélectionné
@@ -387,9 +535,30 @@ if not filtered_df.empty:
         with col_d1:
             st.markdown("**Informations générales**")
             st.write(f"**Task Type:** {job_details['Task Type']}")
-            st.write(f"**Workspace UID:** {job_details.get('Workspace UID', 'Unknown')}")
-            st.write(f"**Media ID:** `{job_details['Media ID']}`")
-            st.write(f"**Task ID:** `{job_details['Task ID']}`")
+            workspace_uid = job_details['Workspace UID'] if 'Workspace UID' in job_details.index else 'None'
+            st.write(f"**Workspace UID:** {workspace_uid}")
+
+            # Déterminer si c'est un job Assembly
+            is_assembly_job = job_details['Task Type'] == "Assembly (Zip Package)"
+
+            if is_assembly_job:
+                assembly_id = job_details['Assembly ID']
+                if assembly_id == "None":
+                    st.markdown("**Assembly ID:** <span style='color: gray;'>None</span>", unsafe_allow_html=True)
+                else:
+                    st.write(f"**Assembly ID:** `{assembly_id}`")
+            else:
+                media_id = job_details['Media ID']
+                if media_id == "None":
+                    st.markdown("**Media ID:** <span style='color: gray;'>None</span>", unsafe_allow_html=True)
+                else:
+                    st.write(f"**Media ID:** `{media_id}`")
+
+            task_id = job_details['Task ID']
+            if task_id == "None":
+                st.markdown("**Task ID:** <span style='color: gray;'>None</span>", unsafe_allow_html=True)
+            else:
+                st.write(f"**Task ID:** `{task_id}`")
             st.write(f"**Job ID:** {job_details['Job ID']}")
             st.write(f"**Job Name:** {job_details['Job Name']}")
             st.write(f"**Status:** {job_details['Status']}")
@@ -427,45 +596,81 @@ if not filtered_df.empty:
 
         backbone = st.session_state.backbone_client
 
-        # Récupérer les tâches Backbone pour ce media_id
+        # Déterminer si c'est un job Assembly
+        is_assembly_job = job_details['Task Type'] == "Assembly (Zip Package)"
+
+        # Récupérer les tâches Backbone pour ce media_id ou assembly_id
         backbone_tasks = []
         selected_backbone_task_id = None
-        media_id = job_details['Media ID']
 
-        if backbone.is_available() and media_id != "Unknown":
-            try:
-                query_filter = f"eq(media_id,{media_id})"
-                tasks_result = backbone.client.get_tasks(query_filter=query_filter)
-                backbone_tasks = tasks_result.get('data', []) if isinstance(tasks_result, dict) else []
+        if is_assembly_job:
+            # Pour les jobs Assembly, utiliser assembly_id
+            assembly_id = job_details['Assembly ID']
 
-                if backbone_tasks:
-                    # Créer une liste d'options pour le selectbox
-                    task_options = []
-                    for task in backbone_tasks:
-                        task_id = task.get('task_id') or task.get('_id')
-                        task_type = task.get('type', 'unknown')
-                        task_status = task.get('status', 'unknown')
-                        task_options.append({
-                            'id': task_id,
-                            'label': f"{task_type} ({task_status}) - {task_id}",
-                            'type': task_type,
-                            'status': task_status
-                        })
+            if backbone.is_available() and assembly_id != "None":
+                try:
+                    query_filter = f"eq(assembly_id,{assembly_id})"
+                    tasks_result = backbone.client.get_tasks(query_filter=query_filter)
+                    backbone_tasks = tasks_result.get('data', []) if isinstance(tasks_result, dict) else []
+                except Exception as e:
+                    st.warning(f"Impossible de récupérer les tâches Backbone pour l'assembly {assembly_id}: {str(e)}")
+        else:
+            # Pour les autres jobs, utiliser media_id
+            media_id = job_details['Media ID']
 
-                    # Selectbox pour choisir la tâche
-                    selected_option = st.selectbox(
-                        "Sélectionnez la tâche à utiliser:",
-                        options=range(len(task_options)),
-                        format_func=lambda i: task_options[i]['label'],
-                        key=f"task_selector_{selected_job_id}"
-                    )
+            if backbone.is_available() and media_id != "None":
+                try:
+                    query_filter = f"eq(media_id,{media_id})"
+                    tasks_result = backbone.client.get_tasks(query_filter=query_filter)
+                    backbone_tasks = tasks_result.get('data', []) if isinstance(tasks_result, dict) else []
+                except Exception as e:
+                    st.warning(f"Impossible de récupérer les tâches Backbone pour le media {media_id}: {str(e)}")
 
-                    selected_backbone_task_id = task_options[selected_option]['id']
-                    st.info(f"Tâche sélectionnée: `{selected_backbone_task_id}`")
-                else:
-                    st.warning(f"Aucune tâche Backbone trouvée pour media_id: {media_id}")
-            except Exception as e:
-                st.error(f"Erreur lors de la récupération des tâches Backbone: {str(e)}")
+        if backbone_tasks:
+            # Créer une liste d'options pour le selectbox
+            task_options = []
+            for task in backbone_tasks:
+                task_id = task.get('task_id') or task.get('_id')
+                task_type = task.get('type', 'unknown')
+                task_status = task.get('status', 'unknown')
+                task_options.append({
+                    'id': task_id,
+                    'label': f"{task_type} ({task_status}) - {task_id}",
+                    'type': task_type,
+                    'status': task_status
+                })
+
+            # Déterminer l'index par défaut pour la tâche Backbone
+            default_task_index = 0
+            session_key = f"backbone_task_{selected_job_id}"
+            if session_key in st.session_state.selected_backbone_tasks:
+                saved_task_id = st.session_state.selected_backbone_tasks[session_key]
+                # Chercher l'index de cette tâche
+                for idx, task_opt in enumerate(task_options):
+                    if task_opt['id'] == saved_task_id:
+                        default_task_index = idx
+                        break
+
+            # Selectbox pour choisir la tâche
+            selected_option = st.selectbox(
+                "Sélectionnez la tâche à utiliser:",
+                options=range(len(task_options)),
+                format_func=lambda i: task_options[i]['label'],
+                key=f"task_selector_{selected_job_id}",
+                index=default_task_index
+            )
+
+            selected_backbone_task_id = task_options[selected_option]['id']
+
+            # Sauvegarder dans session_state
+            st.session_state.selected_backbone_tasks[session_key] = selected_backbone_task_id
+
+            st.info(f"Tâche sélectionnée: `{selected_backbone_task_id}`")
+        else:
+            if is_assembly_job:
+                st.warning(f"Aucune tâche Backbone trouvée pour assembly_id: {job_details['Assembly ID']}")
+            else:
+                st.warning(f"Aucune tâche Backbone trouvée pour media_id: {job_details['Media ID']}")
 
         # Vérifier si l'API est disponible
         if not backbone.is_available():
@@ -482,72 +687,132 @@ if not filtered_df.empty:
         col_a1, col_a2 = st.columns([3, 1])
 
         with col_a1:
+            # Déterminer les actions disponibles selon le type de job
+            if is_assembly_job:
+                action_options = ["Repair"]
+            else:
+                action_options = ["Restart", "Abort", "Broken", "Restart and set as broken"]
+
+            # Déterminer l'index par défaut pour l'action
+            default_action_index = 0
+            if st.session_state.selected_action in action_options:
+                default_action_index = action_options.index(st.session_state.selected_action)
+
             action = st.radio(
                 "Action à exécuter",
-                ["Restart", "Abort", "Broken", "Restart and set as broken"],
-                horizontal=True
+                action_options,
+                horizontal=True,
+                index=default_action_index
             )
+
+            # Mettre à jour session_state
+            st.session_state.selected_action = action
 
         with col_a2:
             st.write("")  # Spacer
             st.write("")  # Spacer
             if st.button("Exécuter", use_container_width=True):
-                # Utiliser le task_id sélectionné dans Backbone, ou celui extrait du job name
-                task_id = selected_backbone_task_id if selected_backbone_task_id else job_details['Task ID']
-                media_id = job_details['Media ID']
                 region = job_details['Region']  # Récupérer la région du job
 
-                # Vérifier que les IDs sont valides
-                if not selected_backbone_task_id and (task_id == "Unknown" or media_id == "Unknown"):
-                    st.error("Aucune tâche Backbone sélectionnée et Task ID/Media ID manquant. Impossible d'exécuter l'action.")
-                elif not backbone.is_available():
+                if not backbone.is_available():
                     st.error("API BackboneClient non disponible.")
-                else:
-                    # Exécuter l'action directement avec le task_id sélectionné
-                    # La région est passée à chaque action pour mettre à jour AWS_DEFAULT_REGION
-                    with st.spinner(f"Exécution de l'action {action}..."):
-                        if action == "Abort":
-                            # Appeler directement avec le task_id et la région
-                            result = backbone.abort_task_direct(task_id, region=region)
-                        elif action == "Broken":
-                            # Appeler directement avec le task_id et la région
-                            result = backbone.break_task_direct(task_id, region=region)
-                        elif action == "Restart":
-                            result = backbone.restart_task(task_id, media_id, region=region)
-                        elif action == "Restart and set as broken":
-                            result = backbone.restart_and_break_task_direct(task_id, media_id, region=region)
-                        else:
-                            result = {"success": False, "error": "Action inconnue"}
+                elif is_assembly_job:
+                    # Pour les jobs Assembly, utiliser assembly_id
+                    assembly_id = job_details['Assembly ID']
 
-                    # Afficher le résultat
-                    if result["success"]:
-                        st.success(f"Action **{action}** exécutée avec succès sur la tâche **{task_id}**")
-
-                        # Historique des actions
-                        if "action_log" not in st.session_state:
-                            st.session_state.action_log = []
-
-                        st.session_state.action_log.append({
-                            "Task ID": task_id,
-                            "Media ID": media_id,
-                            "Job ID": selected_job_id,
-                            "Action": action,
-                            "Status": "Success",
-                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
+                    if assembly_id == "None":
+                        st.error("Assembly ID manquant. Impossible d'exécuter l'action.")
                     else:
-                        st.error(f"Erreur lors de l'exécution de l'action: {result.get('error', 'Erreur inconnue')}")
+                        # Exécuter l'action Repair pour Assembly
+                        with st.spinner(f"Exécution de l'action {action}..."):
+                            if action == "Repair":
+                                result = backbone.repair_assembly(assembly_id, region=region)
+                            else:
+                                result = {"success": False, "error": "Action inconnue pour Assembly"}
 
-                        # Historique des actions (même en cas d'erreur)
-                        if "action_log" not in st.session_state:
-                            st.session_state.action_log = []
+                        # Afficher le résultat
+                        if result["success"]:
+                            st.success(f"Action **{action}** exécutée avec succès sur l'assembly **{assembly_id}**")
 
-                        st.session_state.action_log.append({
-                            "Task ID": task_id,
+                            # Historique des actions
+                            if "action_log" not in st.session_state:
+                                st.session_state.action_log = []
+
+                            st.session_state.action_log.append({
+                                "Assembly ID": assembly_id,
+                                "Job ID": selected_job_id,
+                                "Action": action,
+                                "Status": "Success",
+                                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                        else:
+                            st.error(f"Erreur lors de l'exécution de l'action: {result.get('error', 'Erreur inconnue')}")
+
+                            # Historique des actions (même en cas d'erreur)
+                            if "action_log" not in st.session_state:
+                                st.session_state.action_log = []
+
+                            st.session_state.action_log.append({
+                                "Assembly ID": assembly_id,
+                                "Job ID": selected_job_id,
+                                "Action": action,
+                                "Status": f"Error: {result.get('error', 'Erreur inconnue')}",
+                                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                else:
+                    # Pour les autres jobs, utiliser task_id et media_id
+                    task_id = selected_backbone_task_id if selected_backbone_task_id else job_details['Task ID']
+                    media_id = job_details['Media ID']
+
+                    # Vérifier que les IDs sont valides
+                    if not selected_backbone_task_id and (task_id == "None" or media_id == "None"):
+                        st.error("Aucune tâche Backbone sélectionnée et Task ID/Media ID manquant. Impossible d'exécuter l'action.")
+                    else:
+                        # Exécuter l'action directement avec le task_id sélectionné
+                        # La région est passée à chaque action pour mettre à jour AWS_DEFAULT_REGION
+                        with st.spinner(f"Exécution de l'action {action}..."):
+                            if action == "Abort":
+                                # Appeler directement avec le task_id et la région
+                                result = backbone.abort_task_direct(task_id, region=region)
+                            elif action == "Broken":
+                                # Appeler directement avec le task_id et la région
+                                result = backbone.break_task_direct(task_id, region=region)
+                            elif action == "Restart":
+                                result = backbone.restart_task(task_id, media_id, region=region)
+                            elif action == "Restart and set as broken":
+                                result = backbone.restart_and_break_task_direct(task_id, media_id, region=region)
+                            else:
+                                result = {"success": False, "error": "Action inconnue"}
+
+                        # Afficher le résultat
+                        if result["success"]:
+                            st.success(f"Action **{action}** exécutée avec succès sur la tâche **{task_id}**")
+
+                            # Historique des actions
+                            if "action_log" not in st.session_state:
+                                st.session_state.action_log = []
+
+                            st.session_state.action_log.append({
+                                "Task ID": task_id,
+                                "Media ID": media_id,
+                                "Job ID": selected_job_id,
+                                "Action": action,
+                                "Status": "Success",
+                                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                        else:
+                            st.error(f"Erreur lors de l'exécution de l'action: {result.get('error', 'Erreur inconnue')}")
+
+                            # Historique des actions (même en cas d'erreur)
+                            if "action_log" not in st.session_state:
+                                st.session_state.action_log = []
+
+                            st.session_state.action_log.append({
+                                "Task ID": task_id,
                             "Media ID": media_id,
                             "Job ID": selected_job_id,
                             "Action": action,
-                            "Status": f"Error: {result.get('error', 'Unknown')}",
+                            "Status": f"Error: {result.get('error', 'None')}",
                             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         })
 
